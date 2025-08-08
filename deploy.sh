@@ -10,7 +10,7 @@ echo "=== Деплой изменений на сервер ==="
 
 # Проверка синтаксиса перед коммитом
 echo "Проверка синтаксиса..."
-python -m py_compile main.py bot.py database.py
+python -m py_compile main.py bot.py database.py llm_client.py config.py
 if [ $? -ne 0 ]; then
     echo "❌ Ошибка в синтаксисе Python! Отмена деплоя..."
     exit 1

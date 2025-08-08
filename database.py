@@ -3,12 +3,13 @@ import aiofiles
 import aiosqlite
 from datetime import datetime
 import logging
+from config import DATABASE_PATH
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DB_PATH = "employees.db"
+DB_PATH = DATABASE_PATH
 
 # SQL для создания таблиц
 INIT_SQL = """

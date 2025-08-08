@@ -6,10 +6,12 @@ load_dotenv()
 
 # Telegram Bot
 API_TOKEN = os.getenv('API_TOKEN', '7987520742:AAHOXmsESsiP46HTQLPxu5PTzdDErj0XuwE')
-ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '925237471'))
+ADMIN_CHAT_ID = int((os.getenv('ADMIN_CHAT_ID') or '925237471'))
 
 # Model Service
 MODEL_SERVICE_URL = os.getenv('MODEL_SERVICE_URL', 'http://localhost:8000')
+# Путь к GGUF модели для сервиса модели (используется model_service.py)
+GGUF_MODEL_PATH = os.getenv('GGUF_MODEL_PATH', 'model-q2_k.gguf')
 
 # Database
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'employees.db')

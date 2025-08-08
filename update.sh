@@ -16,7 +16,7 @@ source venv/bin/activate
 echo "Создание бэкапа..."
 backup_dir="backups/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$backup_dir"
-cp -r bot.py database.py main.py "$backup_dir/"
+cp -r bot.py database.py main.py llm_client.py config.py "$backup_dir/"
 cp employees.db "$backup_dir/" 2>/dev/null || true
 
 # Получение последних изменений
@@ -30,11 +30,9 @@ pip install -r requirements.txt
 
 # Проверка синтаксиса Python файлов
 echo "Проверка синтаксиса..."
-python -m py_compile main.py bot.py database.py
+python -m py_compile main.py bot.py database.py llm_client.py config.py
 if [ $? -ne 0 ]; then
     echo "❌ Ошибка в синтаксисе Python! Отмена обновления..."
-    # Восстанавливаем из бэкапа
-    cp "$backup_dir"/* .
     exit 1
 fi
 
@@ -51,8 +49,5 @@ if sudo systemctl is-active --quiet telegram-bot; then
     ls -dt backups/*/ | tail -n +6 | xargs rm -rf
 else
     echo "❌ Ошибка запуска бота!"
-    echo "Восстановление из бэкапа..."
-    cp "$backup_dir"/* .
-    sudo systemctl restart telegram-bot
     echo "Проверьте логи: sudo journalctl -u telegram-bot -n 50"
 fi 

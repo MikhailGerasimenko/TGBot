@@ -7,58 +7,30 @@ import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from database import verify_employee, log_registration_attempt, get_registration_attempts, get_all_employees
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
-from sentence_transformers import SentenceTransformer
+from llm_client import LLMClient
 import numpy as np
 from docx import Document
 import re
 from collections import defaultdict
+from config import API_TOKEN, ADMIN_CHAT_ID, DOCS_DIR as DOCUMENTS_DIR, LOGS_DIR
 
-# Конфигурация
-API_TOKEN = '7987520742:AAHOXmsESsiP46HTQLPxu5PTzdDErj0XuwE'
-ADMIN_CHAT_ID = 925237471
-
-# Конфигурация для LLM
-MODEL_NAME = "IlyaGusev/saiga2_7b_gguf"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Конфигурация для LLM (через сервис)
 MAX_LENGTH = 2048
 MAX_NEW_TOKENS = 512
 
-# Конфигурация для RAG
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-DOCUMENTS_DIR = "docs"
+# Глобальные переменные для клиентов
+llm_client = LLMClient()
 
-# Глобальные переменные для моделей
-llm = None
-tokenizer = None
-embedding_model = None
-document_embeddings = None
-document_chunks = []
-
-# Обновляем IC_CACHE для работы с локальной БД
-IC_CACHE = {
-    "employees": {},
-    "last_sync": None,
-    "sync_in_progress": False
-}
-
-# Данные пользователей
-AUTHORIZED_USERS = {}
-PENDING_REGISTRATIONS = {}  # user_id -> {step, name, employee_id, ...}
-
-# Добавляем структуру для отслеживания попыток регистрации
-REGISTRATION_ATTEMPTS = {}  # user_id -> {attempts: int, last_attempt: datetime}
-MAX_ATTEMPTS = 3  # Максимальное количество попыток в течение дня
-RETRY_COMMANDS = ['retry', 'повтор', 'заново']
-
-# Состояния пользователей
-USER_STATES = {}
+auth_logger = logging.getLogger(__name__)
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log')),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -87,6 +59,25 @@ async def send_admin_notification(text: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления: {e}")
         return False
+
+# Обновляем IC_CACHE для работы с локальной БД
+IC_CACHE = {
+    "employees": {},
+    "last_sync": None,
+    "sync_in_progress": False
+}
+
+# Данные пользователей
+AUTHORIZED_USERS = {}
+PENDING_REGISTRATIONS = {}  # user_id -> {step, name, employee_id, ...}
+
+# Добавляем структуру для отслеживания попыток регистрации
+REGISTRATION_ATTEMPTS = {}  # user_id -> {attempts: int, last_attempt: datetime}
+MAX_ATTEMPTS = 3  # Максимальное количество попыток в течение дня
+RETRY_COMMANDS = ['retry', 'повтор', 'заново']
+
+# Состояния пользователей
+USER_STATES = {}
 
 async def sync_with_1c():
     """Синхронизация данных с локальной БД"""
@@ -204,34 +195,7 @@ def update_registration_attempts(user_id: int):
         REGISTRATION_ATTEMPTS[user_id]['attempts'] += 1
         REGISTRATION_ATTEMPTS[user_id]['last_attempt'] = datetime.now()
 
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
-
-async def init_models():
-    """Инициализация моделей"""
-    global llm, tokenizer, embedding_model
-    
-    try:
-        logger.info("Загрузка моделей...")
-        
-        # Загрузка основной модели
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-        llm = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
-            device_map="auto" if DEVICE == "cuda" else None,
-            trust_remote_code=True
-        )
-        
-        # Загрузка модели для эмбеддингов
-        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-        if DEVICE == "cuda":
-            embedding_model.to(DEVICE)
-            
-        logger.info("Модели успешно загружены")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при загрузке моделей: {e}")
-        return False
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ДОКУМЕНТАМИ ==========
 
 def extract_text_from_docx(file_path: str) -> str:
     """Извлечение текста из Word файла"""
@@ -284,7 +248,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 500) -> List[str]:
     return chunks
 
 async def index_document(file_path: str) -> bool:
-    """Индексация документа"""
+    """Индексация документа (через сервис эмбеддингов)"""
     global document_embeddings, document_chunks
     
     try:
@@ -296,8 +260,11 @@ async def index_document(file_path: str) -> bool:
         # Разбиваем на чанки
         chunks = split_text_into_chunks(text)
         
-        # Создаем эмбеддинги
-        embeddings = embedding_model.encode(chunks)
+        # Создаем эмбеддинги через сервис
+        embeddings = await llm_client.create_embeddings(chunks)
+        if embeddings is None:
+            return False
+        embeddings = np.array(embeddings)
         
         # Сохраняем
         document_chunks.extend(chunks)
@@ -316,8 +283,11 @@ def find_relevant_chunks(query: str, top_k: int = 3) -> List[str]:
     """Поиск релевантных чанков"""
     if not document_embeddings is None and len(document_chunks) > 0:
         try:
-            # Получаем эмбеддинг запроса
-            query_embedding = embedding_model.encode([query])[0]
+            # Получаем эмбеддинг запроса через сервис
+            query_embedding_list = awaitable_create_query_embedding(query)
+            if query_embedding_list is None:
+                return []
+            query_embedding = np.array(query_embedding_list[0])
             
             # Считаем косинусное сходство
             similarities = np.dot(document_embeddings, query_embedding)
@@ -330,44 +300,26 @@ def find_relevant_chunks(query: str, top_k: int = 3) -> List[str]:
     
     return []
 
-async def generate_response(query: str, context: str = "") -> str:
-    """Генерация ответа с помощью LLM"""
+async def awaitable_create_query_embedding(query: str):
     try:
-        # Формируем промпт
-        system_prompt = """Ты — корпоративный ассистент. Отвечай на вопросы, используя предоставленный контекст.
-        Если информации в контексте недостаточно, так и скажи. Отвечай кратко и по делу."""
-        
-        if context:
-            prompt = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\nКонтекст:\n{context}\n\nВопрос: {query} [/INST]"
-        else:
-            prompt = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\nВопрос: {query} [/INST]"
-        
-        # Токенизируем
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_LENGTH)
-        if DEVICE == "cuda":
-            inputs = inputs.to(DEVICE)
-        
-        # Генерируем ответ
-        with torch.no_grad():
-            outputs = llm.generate(
-                **inputs,
-                max_new_tokens=MAX_NEW_TOKENS,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.95,
-                pad_token_id=tokenizer.eos_token_id
-            )
-        
-        # Декодируем ответ
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Очищаем ответ от промпта
-        response = response.split("[/INST]")[-1].strip()
-        
+        return await llm_client.create_embeddings([query])
+    except Exception:
+        return None
+
+async def generate_response(query: str, context: str = "") -> str:
+    """Генерация ответа через сервис LLM"""
+    try:
+        response = await llm_client.generate(query=query, context=context, max_tokens=MAX_NEW_TOKENS)
+        if response is None:
+            return "Извините, произошла ошибка при обработке вашего запроса."
         return response
     except Exception as e:
         logger.error(f"Ошибка при генерации ответа: {e}")
         return "Извините, произошла ошибка при обработке вашего запроса."
+
+# Глобальные переменные для RAG
+document_embeddings = None
+document_chunks = []
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 
@@ -377,6 +329,9 @@ def setup_handlers(dp: Dispatcher):
     @dp.message(Command('start'))
     async def start_handler(message: types.Message):
         user_id = message.from_user.id
+        if not API_TOKEN:
+            await message.answer('❌ Не задан API_TOKEN. Укажите его в .env')
+            return
         if user_id in AUTHORIZED_USERS:
             await message.answer('Добро пожаловать! Вы авторизованы.', reply_markup=main_kb)
         else:
@@ -471,6 +426,9 @@ def setup_handlers(dp: Dispatcher):
                 if user_id in REGISTRATION_ATTEMPTS:
                     del REGISTRATION_ATTEMPTS[user_id]
                 
+                # Логируем успешную попытку
+                await log_registration_attempt(user_id, reg_data['name'], employee_id, True)
+                
                 await message.answer(
                     f"✅ Регистрация подтверждена!\n\n"
                     f"📋 Ваши данные:\n"
@@ -492,6 +450,9 @@ def setup_handlers(dp: Dispatcher):
             else:
                 # Обновляем счетчик попыток
                 update_registration_attempts(user_id)
+                
+                # Логируем неуспешную попытку
+                await log_registration_attempt(user_id, reg_data.get('name', ''), employee_id, False)
                 
                 # Формируем сообщение об ошибке
                 error_msg = [
@@ -516,7 +477,7 @@ def setup_handlers(dp: Dispatcher):
                 
                 await send_admin_notification(
                     f"⚠️ Неудачная попытка регистрации\n\n"
-                    f"👤 Введено ФИО: {reg_data['name']}\n"
+                    f"👤 Введено ФИО: {reg_data.get('name', '')}\n"
                     f"🔢 Табельный: {employee_id}\n"
                     f"🆔 Telegram ID: {user_id}\n"
                     f"📊 Попытка: {REGISTRATION_ATTEMPTS[user_id]['attempts']}/{MAX_ATTEMPTS}"
@@ -619,8 +580,6 @@ def setup_handlers(dp: Dispatcher):
                 "❌ Произошла ошибка при обработке документа.",
                 reply_markup=main_kb
             )
-    
-    # Остальные обработчики (регистрация, retry и т.д.) остаются без изменений
     
     @dp.message(Command('help'))
     async def help_handler(message: types.Message):

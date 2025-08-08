@@ -1,17 +1,13 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from bot import bot, periodic_sync, setup_handlers, init_models
+from bot import bot, periodic_sync, setup_handlers
 from database import init_db, populate_test_data
 
-# Настройка логирования
+# Настройка логирования (подробная настройка в bot.py)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
 )
 
 logger = logging.getLogger(__name__)
@@ -22,11 +18,6 @@ async def main():
         logger.info("Инициализация базы данных...")
         await init_db()
         await populate_test_data()
-        
-        # Инициализация моделей
-        logger.info("Инициализация моделей...")
-        if not await init_models():
-            logger.warning("Модели не загружены. Бот будет работать только с функциями регистрации.")
         
         # Создаем диспетчер
         dp = Dispatcher()

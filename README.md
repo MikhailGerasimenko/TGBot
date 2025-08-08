@@ -17,23 +17,22 @@ Telegram бот для корпоративной поддержки с испо
 
 1. **Model Service** (model_service.py):
    - FastAPI сервер для LLM
-   - Обработка тяжелых вычислений
-   - Работа с GPU
-   - Создание эмбеддингов
+   - Загрузка GGUF модели через `llama-cpp-python`
+   - Работа с GPU/CPU (через n_gpu_layers)
+   - Создание эмбеддингов (Sentence-Transformers)
 
 2. **Telegram Bot** (bot.py):
    - Обработка команд пользователей
    - Регистрация и верификация
    - Работа с базой данных
-   - Взаимодействие с Model Service
+   - Взаимодействие с Model Service через HTTP
 
 ## Требования
 
 ### Для Model Service:
 - Python 3.8+
-- NVIDIA GPU с 24GB VRAM
-- 16GB RAM
-- CUDA toolkit
+- NVIDIA GPU (опционально) — для ускорения указать `LLAMA_GPU_LAYERS`
+- 8–24GB RAM (в зависимости от модели)
 
 ### Для Telegram Bot:
 - Python 3.8+
@@ -52,7 +51,7 @@ cd your-repo
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # или
-venv\\Scripts\\activate  # Windows
+venv\Scripts\activate  # Windows
 ```
 
 3. Установите зависимости:
@@ -70,15 +69,26 @@ cp env.example .env
 
 ### Model Service (на сервере):
 
-1. Настройка systemd:
+1. Укажите путь к GGUF в `.env`:
+```env
+GGUF_MODEL_PATH=/home/bot/models/model-q2_k.gguf
+LLAMA_CTX=2048
+LLAMA_THREADS=4
+LLAMA_BATCH=256
+LLAMA_GPU_LAYERS=32
+```
+
+2. Запуск:
 ```bash
+python model_service.py
+# или через systemd (рекомендуется)
 sudo cp model-service.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable model-service
 sudo systemctl start model-service
 ```
 
-2. Проверка статуса:
+3. Проверка статуса:
 ```bash
 sudo systemctl status model-service
 sudo journalctl -u model-service -f
@@ -86,12 +96,27 @@ sudo journalctl -u model-service -f
 
 ### Telegram Bot:
 
-1. Для разработки:
+1. Быстрый старт (без модели, проверка регистрации):
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp env.example .env
+# при желании можно переопределить API_TOKEN и ADMIN_CHAT_ID в .env (по умолчанию уже заданы)
+python main.py
+```
+
+Альтернатива (одноразовый запуск без правки .env):
+```bash
+API_TOKEN=... ADMIN_CHAT_ID=... MODEL_SERVICE_URL=http://localhost:8000 venv/bin/python main.py
+```
+
+2. Для разработки:
 ```bash
 ./dev.sh
 ```
 
-2. Для production:
+3. Для production:
 ```bash
 sudo cp telegram-bot.service /etc/systemd/system/
 sudo systemctl enable telegram-bot
@@ -102,7 +127,6 @@ sudo systemctl start telegram-bot
 
 1. Настройка окружения:
 ```bash
-# Установка зависимостей для разработки
 pip install -r requirements.txt
 ```
 
@@ -139,15 +163,15 @@ telegram-bot/
 ├── main.py           # Точка входа
 ├── bot.py            # Логика бота
 ├── database.py       # Работа с БД
-├── model_service.py  # LLM сервис
+├── model_service.py  # LLM сервис (llama-cpp, GGUF)
 ├── llm_client.py     # Клиент для LLM
 ├── config.py         # Конфигурация
 ├── requirements.txt  # Зависимости
 ├── setup.sh          # Установка
 ├── update.sh         # Обновление
 ├── deploy.sh         # Деплой
-├── dev.sh           # Разработка
-└── docs/            # Документация
+├── dev.sh            # Разработка
+└── docs/             # Документация
 ```
 
 ## Конфигурация
@@ -161,9 +185,18 @@ ADMIN_CHAT_ID=your_admin_id
 
 # Model Service
 MODEL_SERVICE_URL=http://your-server:8000
+GGUF_MODEL_PATH=/path/to/model.gguf
+LLAMA_CTX=2048
+LLAMA_THREADS=4
+LLAMA_BATCH=256
+LLAMA_GPU_LAYERS=32
+MAX_NEW_TOKENS=512
 
 # Database
 DATABASE_PATH=employees.db
+
+# Logging
+LOG_LEVEL=INFO
 ```
 
 ## Мониторинг
@@ -186,9 +219,9 @@ sudo journalctl -u model-service -f
 
 ## Безопасность
 
-1. Все секреты хранятся в `.env`
-2. Используется верификация пользователей
-3. Доступ к API модели только с авторизованных IP
+1. Все секреты хранятся в `.env` (в коде отсутствуют реальные токены)
+2. Верификация пользователей
+3. Доступ к API модели — по внутренней сети/Firewall
 4. Регулярное резервное копирование данных
 
 ## Поддержка

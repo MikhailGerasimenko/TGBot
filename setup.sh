@@ -17,7 +17,6 @@ source venv/bin/activate
 echo "Установка зависимостей..."
 pip install --upgrade pip
 pip install -r requirements.txt
-pip install psutil
 
 # Проверка системных требований
 echo "Проверка системных требований..."
@@ -27,10 +26,10 @@ python check_server.py
 echo "Создание необходимых директорий..."
 mkdir -p docs
 mkdir -p logs
+mkdir -p models
 
-# Загрузка модели
-echo "Подготовка к загрузке модели..."
-python download_model.py
+# Подсказка по модели
+echo "Если вы используете GGUF, поместите файл модели в models/ и укажите GGUF_MODEL_PATH в .env"
 
 echo "=== Установка завершена ==="
 echo "Для запуска бота используйте: python main.py" 

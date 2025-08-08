@@ -1,14 +1,7 @@
 import aiohttp
 import logging
 from typing import List, Optional
-import os
-from dotenv import load_dotenv
-
-# Загружаем переменные окружения
-load_dotenv()
-
-# Конфигурация
-MODEL_SERVICE_URL = os.getenv('MODEL_SERVICE_URL', 'http://localhost:8000')
+from config import MODEL_SERVICE_URL
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
