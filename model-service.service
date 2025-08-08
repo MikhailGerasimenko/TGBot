@@ -1,0 +1,15 @@
+[Unit]
+Description=LLM Model Service
+After=network.target
+
+[Service]
+Type=simple
+User=bot
+WorkingDirectory=/home/bot/telegram-bot
+Environment=PATH=/home/bot/telegram-bot/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/bot/telegram-bot/venv/bin/python model_service.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target 

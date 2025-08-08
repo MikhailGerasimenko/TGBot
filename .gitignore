@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+bot.log
+
+# Database
+*.db
+*.sqlite3
+
+# Models and embeddings
+models/
+*.gguf
+*.bin
+*.pt
+*.pth
+
+# Environment variables
+.env
+
+# Mac
+.DS_Store
+
+# Project specific
+backups/
+docs/
+employees.db
+saiga_yandexgpt_8b.Q8_0.gguf 
