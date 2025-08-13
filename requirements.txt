@@ -15,4 +15,13 @@ uvicorn>=0.27.0
 python-multipart>=0.0.6
 aiohttp>=3.9.0
 psutil>=5.9.0
-llama-cpp-python>=0.2.64 
+llama-cpp-python>=0.2.64
+redis>=5.0.1
+# MySQL (опционально)
+aiomysql>=0.2.0
+# MS SQL Server (опционально; требует установленный ODBC драйвер на сервере)
+aioodbc>=0.4.0
+pyodbc>=5.1.0
+# RAG улучшения
+faiss-cpu>=1.8.0
+rank-bm25>=0.2.2 

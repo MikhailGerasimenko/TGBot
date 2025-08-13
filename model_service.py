@@ -4,13 +4,17 @@ from typing import List, Optional
 import logging
 import uvicorn
 from datetime import datetime
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, util
 import numpy as np
 import os
 from config import GGUF_MODEL_PATH, LOGS_DIR
 
 # llama-cpp-python для GGUF
 from llama_cpp import Llama
+
+# Дополнительно: FAISS и BM25
+import faiss  # type: ignore
+from rank_bm25 import BM25Okapi
 
 # Настройка логирования
 logging.basicConfig(
@@ -31,6 +35,9 @@ N_BATCH = int(os.getenv('LLAMA_BATCH', '256'))
 N_GPU_LAYERS = int(os.getenv('LLAMA_GPU_LAYERS', '32'))
 MAX_NEW_TOKENS = int(os.getenv('MAX_NEW_TOKENS', '512'))
 EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'sentence-transformers/all-MiniLM-L6-v2')
+# Лимит токенов в месяц для коммерческой лицензии (только выходные токены)
+MONTHLY_TOKEN_LIMIT = int(os.getenv('MONTHLY_TOKEN_LIMIT', '10000000'))
+ALERT_THRESHOLD = float(os.getenv('TOKEN_ALERT_THRESHOLD', '0.8'))  # 80%
 
 # Создаем FastAPI приложение
 app = FastAPI(title="LLM Service")
@@ -49,18 +56,60 @@ class EmbeddingRequest(BaseModel):
 class GenerateResponse(BaseModel):
     response: str
     generation_time: float
+    completion_tokens: Optional[int] = None
+    month_key: Optional[str] = None
+    monthly_usage: Optional[int] = None
+    monthly_limit: Optional[int] = None
+    usage_ratio: Optional[float] = None
 
 class EmbeddingResponse(BaseModel):
     embeddings: List[List[float]]
     embedding_time: float
 
+class IndexRequest(BaseModel):
+    documents: List[str]
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+class SearchHit(BaseModel):
+    text: str
+    score: float
+
+class SearchResponse(BaseModel):
+    hits: List[SearchHit]
+
+class UsageResponse(BaseModel):
+    month_key: str
+    monthly_usage: int
+    monthly_limit: int
+    usage_ratio: float
+
 # Глобальные переменные для моделей
 llm: Optional[Llama] = None
 embedding_model: Optional[SentenceTransformer] = None
 
+# Индексы для поиска
+faiss_index = None
+dense_embeddings = None
+bm25_index: Optional[BM25Okapi] = None
+bm25_corpus_tokens: List[List[str]] = []
+corpus_texts: List[str] = []
+
+# Учёт токенов
+token_month_key = datetime.now().strftime('%Y-%m')
+monthly_completion_tokens = 0
+
+def _reset_usage_if_needed():
+    global token_month_key, monthly_completion_tokens
+    now_key = datetime.now().strftime('%Y-%m')
+    if now_key != token_month_key:
+        token_month_key = now_key
+        monthly_completion_tokens = 0
+
 @app.on_event("startup")
 async def load_models():
-    """Загрузка моделей при старте сервиса"""
     global llm, embedding_model
     try:
         logger.info("Загрузка GGUF модели через llama-cpp...")
@@ -82,22 +131,37 @@ async def load_models():
 
 @app.get("/health")
 async def health_check():
-    """Проверка здоровья сервиса"""
+    _reset_usage_if_needed()
     return {
         "status": "ok",
         "models_loaded": all([llm is not None, embedding_model is not None]),
         "model_path": MODEL_PATH,
         "ctx": N_CTX,
-        "gpu_layers": N_GPU_LAYERS
+        "gpu_layers": N_GPU_LAYERS,
+        "corpus_size": len(corpus_texts),
+        "usage": {
+            "month": token_month_key,
+            "completion_tokens": monthly_completion_tokens,
+            "limit": MONTHLY_TOKEN_LIMIT,
+            "ratio": (monthly_completion_tokens / MONTHLY_TOKEN_LIMIT) if MONTHLY_TOKEN_LIMIT else 0.0
+        }
     }
+
+@app.post("/usage", response_model=UsageResponse)
+async def usage():
+    _reset_usage_if_needed()
+    return UsageResponse(
+        month_key=token_month_key,
+        monthly_usage=monthly_completion_tokens,
+        monthly_limit=MONTHLY_TOKEN_LIMIT,
+        usage_ratio=(monthly_completion_tokens / MONTHLY_TOKEN_LIMIT) if MONTHLY_TOKEN_LIMIT else 0.0
+    )
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest):
-    """Генерация ответа с помощью LLM"""
     try:
+        _reset_usage_if_needed()
         start_time = datetime.now()
-
-        # Формат промпта Saiga 2
         if request.context:
             prompt = f"<s>[INST] <<SYS>>\nТы — корпоративный ассистент. Отвечай на вопросы, используя предоставленный контекст.\nЕсли информации в контексте недостаточно, так и скажи. Отвечай кратко и по делу.\n<</SYS>>\n\nКонтекст:\n{request.context}\n\nВопрос: {request.query} [/INST]"
         else:
@@ -111,20 +175,50 @@ async def generate(request: GenerateRequest):
             echo=False
         )
 
-        # Декодирование ответа llama-cpp
         text = ""
+        completion_tokens = None
         if result and "choices" in result and len(result["choices"]) > 0:
             text = result["choices"][0]["text"].strip()
+        # Пытаемся получить usage из ответа
+        try:
+            usage = result.get("usage") if isinstance(result, dict) else None
+            if usage and isinstance(usage, dict) and "completion_tokens" in usage:
+                completion_tokens = int(usage["completion_tokens"])  # type: ignore
+        except Exception:
+            completion_tokens = None
+        # Если нет usage — посчитаем токены у ответа
+        if completion_tokens is None:
+            try:
+                completion_tokens = len(llm.tokenize(text.encode('utf-8')))  # type: ignore
+            except Exception:
+                completion_tokens = len(text.split())
+
+        # Учет токенов
+        global monthly_completion_tokens
+        monthly_completion_tokens += int(completion_tokens or 0)
+        ratio = (monthly_completion_tokens / MONTHLY_TOKEN_LIMIT) if MONTHLY_TOKEN_LIMIT else 0.0
+        if ratio >= ALERT_THRESHOLD:
+            logger.warning(
+                f"Достигнут {int(ratio*100)}% месячного лимита выходных токенов: "
+                f"{monthly_completion_tokens}/{MONTHLY_TOKEN_LIMIT}"
+            )
 
         generation_time = (datetime.now() - start_time).total_seconds()
-        return GenerateResponse(response=text, generation_time=generation_time)
+        return GenerateResponse(
+            response=text,
+            generation_time=generation_time,
+            completion_tokens=completion_tokens,
+            month_key=token_month_key,
+            monthly_usage=monthly_completion_tokens,
+            monthly_limit=MONTHLY_TOKEN_LIMIT,
+            usage_ratio=ratio
+        )
     except Exception as e:
         logger.error(f"Ошибка при генерации ответа: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/embed", response_model=EmbeddingResponse)
 async def embed(request: EmbeddingRequest):
-    """Создание эмбеддингов для текстов"""
     try:
         start_time = datetime.now()
         embeddings = embedding_model.encode(request.texts)
@@ -132,6 +226,65 @@ async def embed(request: EmbeddingRequest):
         return EmbeddingResponse(embeddings=embeddings.tolist(), embedding_time=embedding_time)
     except Exception as e:
         logger.error(f"Ошибка при создании эмбеддингов: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/index")
+async def index_docs(req: IndexRequest):
+    """Индексация массива документов для гибридного поиска."""
+    global faiss_index, dense_embeddings, bm25_index, bm25_corpus_tokens, corpus_texts
+    try:
+        corpus_texts = [t for t in req.documents if t and t.strip()]
+        if not corpus_texts:
+            return {"indexed": 0}
+        # Dense
+        dense_embeddings = embedding_model.encode(corpus_texts, convert_to_numpy=True)
+        dim = dense_embeddings.shape[1]
+        faiss_index = faiss.IndexFlatIP(dim)
+        # нормируем для косинуса
+        norms = np.linalg.norm(dense_embeddings, axis=1, keepdims=True) + 1e-12
+        dense_norm = dense_embeddings / norms
+        faiss_index.add(dense_norm.astype('float32'))
+        # BM25
+        bm25_corpus_tokens = [t.lower().split() for t in corpus_texts]
+        bm25_index = BM25Okapi(bm25_corpus_tokens)
+        return {"indexed": len(corpus_texts)}
+    except Exception as e:
+        logger.error(f"Ошибка индексации: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/search", response_model=SearchResponse)
+async def search(req: SearchRequest):
+    """Гибридный ретривер: BM25 + FAISS, реранкинг косинусом."""
+    try:
+        if not corpus_texts:
+            return SearchResponse(hits=[])
+        # Dense кандидаты
+        q_emb = embedding_model.encode([req.query], convert_to_numpy=True)
+        q_norm = q_emb / (np.linalg.norm(q_emb, axis=1, keepdims=True) + 1e-12)
+        D, I = faiss_index.search(q_norm.astype('float32'), min(req.top_k*3, len(corpus_texts)))
+        dense_candidates = [(int(idx), float(score)) for idx, score in zip(I[0], D[0]) if idx >= 0]
+        # BM25 кандидаты
+        bm_scores = bm25_index.get_scores(req.query.lower().split())
+        bm_top = np.argsort(bm_scores)[-req.top_k*3:][::-1]
+        bm_candidates = [(int(idx), float(bm_scores[idx])) for idx in bm_top]
+        # Слияние
+        combined = {}
+        for idx, sc in dense_candidates:
+            combined[idx] = max(combined.get(idx, 0.0), sc)
+        for idx, sc in bm_candidates:
+            combined[idx] = max(combined.get(idx, 0.0), sc)
+        # Реранкинг косинусом на объединённом пуле
+        rerank = []
+        for idx, _ in combined.items():
+            doc_emb = dense_embeddings[idx]
+            score = float(util.cos_sim(q_emb, np.expand_dims(doc_emb, 0))[0][0])
+            rerank.append((idx, score))
+        rerank.sort(key=lambda x: x[1], reverse=True)
+        top_idxs = [idx for idx, _ in rerank[:req.top_k]]
+        hits = [SearchHit(text=corpus_texts[i], score=float([s for j, s in rerank if j==i][0])) for i in top_idxs]
+        return SearchResponse(hits=hits)
+    except Exception as e:
+        logger.error(f"Ошибка поиска: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@ import aiofiles
 import aiosqlite
 from datetime import datetime
 import logging
-from config import DATABASE_PATH
+from config import DATABASE_PATH, MYSQL_HOST, MYSQL_PORT, MYSQL_DB, MYSQL_USER, MYSQL_PASSWORD, MSSQL_DSN, MSSQL_HOST, MSSQL_PORT, MSSQL_DB, MSSQL_USER, MSSQL_PASSWORD
+import os
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -78,8 +79,103 @@ async def populate_test_data():
         logger.error(f"Ошибка при добавлении тестовых данных: {e}")
         return False
 
+# ===== MSSQL helpers =====
+
+def _mssql_enabled() -> bool:
+    return bool(MSSQL_DSN or (MSSQL_HOST and MSSQL_DB and MSSQL_USER))
+
+async def _mssql_get_pool():
+    import aioodbc
+    if MSSQL_DSN:
+        return await aioodbc.create_pool(dsn=MSSQL_DSN, autocommit=True, minsize=1, maxsize=5)
+    conn_str = (
+        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        f"SERVER={MSSQL_HOST},{MSSQL_PORT};"
+        f"DATABASE={MSSQL_DB};"
+        f"UID={MSSQL_USER};PWD={MSSQL_PASSWORD};"
+        f"TrustServerCertificate=Yes;"
+    )
+    return await aioodbc.create_pool(dsn=conn_str, autocommit=True, minsize=1, maxsize=5)
+
+# ===== MySQL helpers =====
+
+def _mysql_enabled() -> bool:
+    return all([MYSQL_HOST, MYSQL_DB, MYSQL_USER]) and not _mssql_enabled()
+
+async def _mysql_get_pool():
+    import aiomysql
+    return await aiomysql.create_pool(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        db=MYSQL_DB,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        autocommit=True,
+        minsize=1,
+        maxsize=5,
+        charset='utf8mb4'
+    )
+
 async def verify_employee(full_name: str, employee_id: str) -> dict:
-    """Проверка сотрудника в базе данных"""
+    """Проверка сотрудника: MSSQL -> MySQL -> SQLite."""
+    # MSSQL
+    if _mssql_enabled():
+        try:
+            pool = await _mssql_get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT department, position FROM employees
+                        WHERE full_name = ? AND employee_id = ?
+                        """,
+                        (full_name, employee_id)
+                    )
+                    row = await cur.fetchone()
+            await pool.close()
+            if row:
+                department, position = row
+                return {
+                    "verified": True,
+                    "department": department or "",
+                    "position": position or "",
+                    "employee_id": employee_id
+                }
+            return {"verified": False}
+        except Exception as e:
+            logger.error(f"MSSQL verify_employee error: {e}")
+            return {"verified": False, "error": str(e)}
+    
+    # MySQL
+    if _mysql_enabled():
+        try:
+            pool = await _mysql_get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT department, position FROM employees
+                        WHERE full_name = %s AND employee_id = %s
+                        LIMIT 1
+                        """,
+                        (full_name, employee_id)
+                    )
+                    row = await cur.fetchone()
+            await pool.wait_closed()
+            if row:
+                department, position = row
+                return {
+                    "verified": True,
+                    "department": department or "",
+                    "position": position or "",
+                    "employee_id": employee_id
+                }
+            return {"verified": False}
+        except Exception as e:
+            logger.error(f"MySQL verify_employee error: {e}")
+            return {"verified": False, "error": str(e)}
+
+    # SQLite fallback
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -89,7 +185,6 @@ async def verify_employee(full_name: str, employee_id: str) -> dict:
                 (full_name, employee_id)
             ) as cursor:
                 employee = await cursor.fetchone()
-                
                 if employee:
                     return {
                         "verified": True,
@@ -99,11 +194,11 @@ async def verify_employee(full_name: str, employee_id: str) -> dict:
                     }
                 return {"verified": False}
     except Exception as e:
-        logger.error(f"Ошибка при проверке сотрудника: {e}")
+        logger.error(f"SQLite verify_employee error: {e}")
         return {"verified": False, "error": str(e)}
 
 async def log_registration_attempt(telegram_id: int, full_name: str, employee_id: str, success: bool):
-    """Логирование попытки регистрации"""
+    """Логирование попытки регистрации (SQLite)."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -119,7 +214,7 @@ async def log_registration_attempt(telegram_id: int, full_name: str, employee_id
         return False
 
 async def get_registration_attempts(telegram_id: int) -> list:
-    """Получение истории попыток регистрации"""
+    """Получение истории попыток регистрации (SQLite)."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -134,9 +229,46 @@ async def get_registration_attempts(telegram_id: int) -> list:
         logger.error(f"Ошибка при получении истории попыток: {e}")
         return []
 
-# Функция для получения всех сотрудников (аналог синхронизации с 1С)
 async def get_all_employees() -> list:
-    """Получение списка всех сотрудников"""
+    """Список сотрудников: MSSQL -> MySQL -> SQLite."""
+    # MSSQL
+    if _mssql_enabled():
+        try:
+            pool = await _mssql_get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT employee_id, full_name, department, position FROM employees")
+                    rows = await cur.fetchall()
+            await pool.close()
+            return [
+                {
+                    "employee_id": r[0],
+                    "full_name": r[1],
+                    "department": r[2],
+                    "position": r[3],
+                }
+                for r in (rows or [])
+            ]
+        except Exception as e:
+            logger.error(f"MSSQL get_all_employees error: {e}")
+            return []
+
+    # MySQL
+    if _mysql_enabled():
+        try:
+            import aiomysql
+            pool = await _mysql_get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:  # type: ignore
+                    await cur.execute("SELECT employee_id, full_name, department, position FROM employees")
+                    rows = await cur.fetchall()
+            await pool.wait_closed()
+            return rows or []
+        except Exception as e:
+            logger.error(f"MySQL get_all_employees error: {e}")
+            return []
+
+    # SQLite fallback
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -144,5 +276,5 @@ async def get_all_employees() -> list:
                 employees = await cursor.fetchall()
                 return [dict(emp) for emp in employees]
     except Exception as e:
-        logger.error(f"Ошибка при получении списка сотрудников: {e}")
+        logger.error(f"SQLite get_all_employees error: {e}")
         return [] 
