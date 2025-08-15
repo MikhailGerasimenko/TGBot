@@ -13,6 +13,13 @@ MODEL_SERVICE_URL = os.getenv('MODEL_SERVICE_URL', 'http://localhost:8000')
 # Путь к GGUF модели для сервиса модели (используется model_service.py)
 GGUF_MODEL_PATH = os.getenv('GGUF_MODEL_PATH', 'model-q2_k.gguf')
 
+# RAG Configuration
+EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'paraphrase-multilingual-MiniLM-L12-v2')
+CROSS_ENCODER_MODEL = os.getenv('CROSS_ENCODER_MODEL', 'cross-encoder/ms-marco-MiniLM-L-12-v2')
+USE_SEARCH_V2 = os.getenv('USE_SEARCH_V2', 'false').lower() == 'true'
+SEARCH_V2_PERCENTAGE = int(os.getenv('SEARCH_V2_PERCENTAGE', '30'))  # % пользователей на новой версии
+CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.12'))  # Порог уверенности для ответов
+
 # Database (SQLite for logs); External employees DB
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'employees.db')
 # MySQL
