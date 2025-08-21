@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  model-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.model
+    container_name: corporate-bot-model
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../models:/app/models
+      - ../data:/app/data
+      - ../logs:/app/logs
+    environment:
+      - GGUF_MODEL_PATH=/app/models/model-gigachat_20b_q8_0.gguf
+      - LLAMA_CTX=8192
+      - LLAMA_THREADS=16
+      - LLAMA_BATCH=1024
+      - LLAMA_GPU_LAYERS=40
+      - MAX_NEW_TOKENS=512
+      - EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
+      - CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-12-v2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  telegram-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.bot
+    container_name: corporate-bot-telegram
+    depends_on:
+      model-service:
+        condition: service_healthy
+    volumes:
+      - ../data:/app/data
+      - ../documents:/app/documents
+      - ../logs:/app/logs
+    environment:
+      - MODEL_SERVICE_URL=http://model-service:8000
+      - API_TOKEN=${API_TOKEN}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+      - DATABASE_PATH=/app/data/employees.db
+      - DOCS_DIR=/app/documents
+      - LOGS_DIR=/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://model-service:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: corporate-bot-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ../logs:/var/log/nginx
+    depends_on:
+      - model-service
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: corporate-bot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  redis_data: 

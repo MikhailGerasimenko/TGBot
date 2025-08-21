@@ -9,6 +9,7 @@ import numpy as np
 import os
 import pickle
 import hashlib
+import re
 from config import GGUF_MODEL_PATH, LOGS_DIR
 
 # llama-cpp-python для GGUF
@@ -111,6 +112,34 @@ def _reset_usage_if_needed():
     if now_key != token_month_key:
         token_month_key = now_key
         monthly_completion_tokens = 0
+
+def clean_response(text: str) -> str:
+    """Очищает ответ от артефактов форматирования"""
+    # Удаляем все токены форматирования максимально агрессивно
+    text = re.sub(r'\[/?[A-Z]+\]', '', text)  # Удаляем [SYS], [/SYS], [INST], [/INST] и т.д.
+    text = re.sub(r'\[/?[A-Z]+', '', text)    # Удаляем незакрытые токены
+    text = re.sub(r'\[/?[A-Z]+', '', text)    # Повторяем для надежности
+    
+    # Удаляем конкретные проблемные токены
+    text = re.sub(r'\[/SYS\]', '', text)
+    text = re.sub(r'\[/INST\]', '', text)
+    text = re.sub(r'\[/SYS', '', text)
+    text = re.sub(r'\[/INST', '', text)
+    text = re.sub(r'\[SYS\]', '', text)
+    text = re.sub(r'\[INST\]', '', text)
+    
+    # Удаляем лишние пробелы и переносы
+    text = re.sub(r'\s+', ' ', text)
+    # Удаляем пустые строки
+    text = re.sub(r'\n\s*\n', '\n', text)
+    # Удаляем пробелы в начале и конце
+    text = text.strip()
+    
+    # Если текст начинается с "Ответ:", убираем это
+    if text.startswith("Ответ:"):
+        text = text[6:].strip()
+    
+    return text
 
 def get_index_hash() -> str:
     """Генерирует хеш для проверки актуальности индекса"""
@@ -253,6 +282,8 @@ async def generate(request: GenerateRequest):
         completion_tokens = None
         if result and "choices" in result and len(result["choices"]) > 0:
             text = result["choices"][0]["text"].strip()
+            # Очищаем ответ от артефактов
+            text = clean_response(text)
         # Пытаемся получить usage из ответа
         try:
             usage = result.get("usage") if isinstance(result, dict) else None
@@ -291,16 +322,29 @@ async def generate(request: GenerateRequest):
         logger.error(f"Ошибка при генерации ответа: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/embed", response_model=EmbeddingResponse)
-async def embed(request: EmbeddingRequest):
+@app.post("/embeddings", response_model=EmbeddingResponse)
+async def create_embeddings(request: EmbeddingRequest):
     try:
         start_time = datetime.now()
         embeddings = embedding_model.encode(request.texts)
         embedding_time = (datetime.now() - start_time).total_seconds()
-        return EmbeddingResponse(embeddings=embeddings.tolist(), embedding_time=embedding_time)
+        
+        # Добавляем отладочную информацию
+        logger.info(f"Создано эмбеддингов: {len(embeddings)}")
+        logger.info(f"Размерность: {embeddings.shape[1] if len(embeddings.shape) > 1 else len(embeddings)}")
+        
+        response = EmbeddingResponse(embeddings=embeddings.tolist(), embedding_time=embedding_time)
+        logger.info(f"Ответ содержит ключ 'embeddings': {'embeddings' in response.dict()}")
+        
+        return response
     except Exception as e:
         logger.error(f"Ошибка при создании эмбеддингов: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/embed", response_model=EmbeddingResponse)
+async def embed(request: EmbeddingRequest):
+    """Алиас для /embeddings для обратной совместимости"""
+    return await create_embeddings(request)
 
 @app.post("/index")
 async def index_docs(req: IndexRequest):

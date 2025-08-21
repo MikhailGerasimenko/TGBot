@@ -1,0 +1,43 @@
+FROM nvidia/cuda:11.8-devel-ubuntu20.04
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    python3.9 \
+    python3.9-dev \
+    python3-pip \
+    git \
+    wget \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создание символических ссылок
+RUN ln -s /usr/bin/python3.9 /usr/bin/python
+RUN ln -s /usr/bin/pip3 /usr/bin/pip
+
+# Создание рабочей директории
+WORKDIR /app
+
+# Установка llama-cpp-python с CUDA поддержкой
+RUN CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python
+
+# Копирование requirements и установка зависимостей
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копирование исходного кода
+COPY . .
+
+# Создание необходимых директорий
+RUN mkdir -p /app/data /app/models /app/logs
+
+# Переменные окружения
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_VISIBLE_DEVICES=0
+
+# Порт для API
+EXPOSE 8000
+
+# Команда запуска
+CMD ["python", "model_service.py"] 

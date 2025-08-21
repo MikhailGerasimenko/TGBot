@@ -16,6 +16,7 @@ from collections import defaultdict
 from config import API_TOKEN, ADMIN_CHAT_ID, DOCS_DIR as DOCUMENTS_DIR, LOGS_DIR, ONEC_EXPORT_PATH
 from onec_sync import load_employees_from_file
 import time
+from progress_bars import ProgressManager
 
 # Конфигурация для LLM (через сервис)
 MAX_LENGTH = 2048
@@ -39,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 # Инициализация бота
 bot = Bot(token=API_TOKEN)
+
+# Инициализация менеджера прогресс-баров
+progress_manager = ProgressManager(bot)
 
 # Клавиатуры
 main_kb = ReplyKeyboardMarkup(
@@ -699,17 +703,29 @@ def setup_handlers(dp: Dispatcher):
             # Путь сохранения
             safe_name = _sanitize_filename(file_name)
             save_path = os.path.join(DOCUMENTS_DIR, safe_name)
+            # Запускаем прогресс-бар для загрузки
+            await progress_manager.start_progress(user_id, "📥 Загружаю документ...")
+            
             # Скачиваем файл
             await bot.download(doc, destination=save_path)
+            
+            # Обновляем прогресс - индексация
+            await progress_manager.update_progress(user_id, 0.5, "📚 Индексирую документы...")
+            
             await set_user_state(user_id, 'awaiting_doc_upload', '0')
             # Переиндексация всех документов
             chunks_count = await rebuild_service_index_from_docs()
+            
+            # Завершаем прогресс-бар
+            await progress_manager.complete_progress(user_id, "✅ Документ обработан!")
+            
             await message.answer(
                 f"✅ Файл сохранён: {safe_name}\n📚 Индекс обновлён, чанков: {chunks_count}",
                 reply_markup=main_kb
             )
         except Exception as e:
             logger.error(f"Ошибка загрузки документа: {e}")
+            await progress_manager.error_progress(user_id, "❌ Ошибка обработки документа")
             await message.answer('❌ Не удалось обработать документ. Проверьте формат и попробуйте снова.', reply_markup=main_kb)
 
     @dp.message(lambda message: message.text and message.text.lower() in RETRY_COMMANDS)
@@ -836,7 +852,9 @@ def setup_handlers(dp: Dispatcher):
         await set_user_state(user_id, 'awaiting_question', '0')
         
         start_time = time.time()
-        processing_msg = await message.answer("🤔 Обрабатываю ваш вопрос...")
+        
+        # Запускаем прогресс-бар
+        await progress_manager.start_progress(user_id, "🤔 Анализирую ваш вопрос...")
         
         try:
             import aiohttp
@@ -845,6 +863,9 @@ def setup_handlers(dp: Dispatcher):
             conf_threshold = 0.12
             confidence_score = 0.0
             context_found = False
+            
+            # Обновляем прогресс - поиск контекста
+            await progress_manager.update_progress(user_id, 0.3, "💭 Ищу информацию в документах...")
             
             try:
                 # Используем универсальную функцию поиска
@@ -858,7 +879,8 @@ def setup_handlers(dp: Dispatcher):
                         message.text, 
                         f"Department: {user_info.get('department', '')}, Position: {user_info.get('position', '')}"
                     )
-                    await processing_msg.edit_text(
+                    await progress_manager.error_progress(user_id, "❌ Информация не найдена")
+                    await message.answer(
                         "Я не уверен в ответе. Уточните вопрос или добавьте деталей (дата, подразделение, документ)."
                     )
                     return
@@ -871,15 +893,22 @@ def setup_handlers(dp: Dispatcher):
                         message.text, 
                         f"Department: {user_info.get('department', '')}, Position: {user_info.get('position', '')}, Search: {search_version}"
                     )
-                    await processing_msg.edit_text(
+                    await progress_manager.error_progress(user_id, f"❌ Низкая уверенность ({search_version})")
+                    await message.answer(
                         f"Я не уверен в ответе (поиск: {search_version}). Уточните вопрос или добавьте деталей (дата, подразделение, документ)."
                     )
                     return
             except Exception as e:
                 logger.error(f"Ошибка поиска контекста: {e}")
 
+            # Обновляем прогресс - генерация ответа
+            await progress_manager.update_progress(user_id, 0.7, "✨ Формирую ответ...")
+            
             context = top_context
             response = await generate_response(message.text, context)
+            
+            # Завершаем прогресс-бар
+            await progress_manager.complete_progress(user_id, "✅ Ответ готов!")
             
             # Замеряем время ответа
             response_time_ms = int((time.time() - start_time) * 1000)
@@ -899,7 +928,7 @@ def setup_handlers(dp: Dispatcher):
             
             # Отправляем ответ с кнопками фидбека
             feedback_kb = create_feedback_keyboard(qa_session_id)
-            sent_msg = await processing_msg.edit_text(
+            sent_msg = await message.answer(
                 f"Вопрос: {message.text}\n\n"
                 f"Ответ: {response}{sources_block}",
                 reply_markup=feedback_kb
@@ -911,7 +940,8 @@ def setup_handlers(dp: Dispatcher):
                 
         except Exception as e:
             logger.error(f"Ошибка при обработке вопроса: {e}")
-            await processing_msg.edit_text(
+            await progress_manager.error_progress(user_id, "❌ Произошла ошибка")
+            await message.answer(
                 "😔 Извините, произошла ошибка при обработке вашего вопроса. Попробуйте позже.",
                 reply_markup=main_kb
             )
@@ -1142,3 +1172,42 @@ def setup_handlers(dp: Dispatcher):
                         '/analytics - подробная статистика использования\n' \
                         '/stats - краткая статистика (алиас для analytics)\n' \
                         '/compare_search - сравнение версий поиска (A/B тест)'
+
+# Инициализация диспетчера
+dp = Dispatcher()
+
+async def main():
+    """Главная функция запуска бота"""
+    logger.info("🚀 Запуск корпоративного бота...")
+    
+    try:
+        # Инициализация базы данных
+        from database import init_db, populate_test_data
+        await init_db()
+        await populate_test_data()
+        
+        # Загружаем сотрудников из 1C (если есть файл)
+        if ONEC_EXPORT_PATH and os.path.exists(ONEC_EXPORT_PATH):
+            logger.info(f"📋 Загружаем сотрудников из {ONEC_EXPORT_PATH}")
+            load_employees_from_file(ONEC_EXPORT_PATH)
+        
+        # Регистрируем все хендлеры
+        setup_handlers(dp)
+        
+        # Запуск периодической синхронизации
+        asyncio.create_task(periodic_sync())
+        
+        # Уведомляем администратора о запуске
+        await send_admin_notification("🤖 Корпоративный бот запущен и готов к работе!")
+        
+        # Запускаем бота
+        await dp.start_polling(bot)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска бота: {e}")
+        await send_admin_notification(f"❌ Ошибка запуска бота: {e}")
+    finally:
+        await bot.session.close()
+
+if __name__ == '__main__':
+    asyncio.run(main())
