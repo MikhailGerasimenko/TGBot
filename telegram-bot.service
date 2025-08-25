@@ -1,15 +1,17 @@
 [Unit]
-Description=Telegram Bot Service
+Description=Telegram Corporate Bot Service
 After=network.target
 
 [Service]
 Type=simple
-User=bot
-WorkingDirectory=/home/bot/telegram-bot
-Environment=PATH=/home/bot/telegram-bot/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/bot/telegram-bot/venv/bin/python main.py
+User=mixa-root
+WorkingDirectory=/Users/mixa-root/Desktop/бот по работе
+Environment=PATH=/Users/mixa-root/Desktop/бот по работе/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/Users/mixa-root/Desktop/бот по работе/venv/bin/python main.py
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target 

@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements-bot.txt /app/
+RUN pip install --no-cache-dir -r requirements-bot.txt
+
+COPY bot.py main.py database.py llm_client.py progress_bars.py onec_sync.py redis_client.py config.py /app/
+COPY docs /app/docs
+RUN mkdir -p /app/logs
+
+CMD ["python", "main.py"] 

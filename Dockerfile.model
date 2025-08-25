@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-service.txt /app/
+RUN pip install --no-cache-dir -r requirements-service.txt
+
+COPY model_service.py config.py /app/
+RUN mkdir -p /app/logs /app/models
+
+EXPOSE 8000
+
+CMD ["python", "model_service.py"] 

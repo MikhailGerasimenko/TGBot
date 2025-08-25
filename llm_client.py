@@ -10,10 +10,11 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     def __init__(self, base_url: str = MODEL_SERVICE_URL):
         self.base_url = base_url.rstrip('/')
+        self._timeout = aiohttp.ClientTimeout(total=30)
         
     async def health_check(self) -> dict:
         """Проверка здоровья сервиса"""
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._timeout) as session:
             async with session.get(f"{self.base_url}/health") as response:
                 return await response.json()
     
@@ -27,7 +28,7 @@ class LLMClient:
     ) -> Optional[str]:
         """Генерация ответа"""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self._timeout) as session:
                 async with session.post(
                     f"{self.base_url}/generate",
                     json={
@@ -52,7 +53,7 @@ class LLMClient:
     async def create_embeddings(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Создание эмбеддингов"""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self._timeout) as session:
                 async with session.post(
                     f"{self.base_url}/embed",
                     json={"texts": texts}

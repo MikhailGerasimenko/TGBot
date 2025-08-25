@@ -9,14 +9,14 @@ from datetime import datetime, timedelta
 from database import (verify_employee, log_registration_attempt, get_registration_attempts, get_all_employees,
                      log_qa_session, save_feedback, log_unanswered_question, get_analytics_stats, get_popular_questions)
 from llm_client import LLMClient
-import numpy as np
 from docx import Document
 import re
 from collections import defaultdict
-from config import API_TOKEN, ADMIN_CHAT_ID, DOCS_DIR as DOCUMENTS_DIR, LOGS_DIR, ONEC_EXPORT_PATH
+from config import API_TOKEN, ADMIN_CHAT_ID, DOCS_DIR as DOCUMENTS_DIR, LOGS_DIR, ONEC_EXPORT_PATH, CONFIDENCE_THRESHOLD, DATABASE_PATH, USE_SEARCH_V2, SEARCH_V2_PERCENTAGE
 from onec_sync import load_employees_from_file
 import time
 from progress_bars import ProgressManager
+from aiogram.filters import Text
 
 # Конфигурация для LLM (через сервис)
 MAX_LENGTH = 2048
@@ -404,49 +404,6 @@ def smart_chunk_documents(text: str, filename: str = "") -> List[Dict]:
     logger.info(f"Документ разбит на {len(chunks)} чанков (тип: {doc_type})")
     return chunks
 
-async def index_document(file_path: str) -> bool:
-    global document_embeddings, document_chunks
-    try:
-        text = extract_text_from_docx(file_path)
-        if not text:
-            return False
-        chunks = split_text_into_chunks(text)
-        embeddings = await llm_client.create_embeddings(chunks)
-        if embeddings is None:
-            return False
-        embeddings = np.array(embeddings)
-        document_chunks.extend(chunks)
-        if document_embeddings is None:
-            document_embeddings = embeddings
-        else:
-            document_embeddings = np.vstack([document_embeddings, embeddings])
-        logger.info(f"Документ {file_path} успешно проиндексирован")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при индексации документа: {e}")
-        return False
-
-async def awaitable_create_query_embedding(query: str):
-    try:
-        return await llm_client.create_embeddings([query])
-    except Exception:
-        return None
-
-def find_relevant_chunks(query: str, top_k: int = 3) -> List[str]:
-    if not document_embeddings is None and len(document_chunks) > 0:
-        try:
-            loop = asyncio.get_event_loop()
-            query_embedding_list = loop.run_until_complete(awaitable_create_query_embedding(query))
-            if query_embedding_list is None:
-                return []
-            query_embedding = np.array(query_embedding_list[0])
-            similarities = np.dot(document_embeddings, query_embedding)
-            top_indices = np.argsort(similarities)[-top_k:][::-1]
-            return [document_chunks[i] for i in top_indices]
-        except Exception as e:
-            logger.error(f"Ошибка при поиске релевантных чанков: {e}")
-    return []
-
 async def generate_response(query: str, context: str = "") -> str:
     try:
         response = await llm_client.generate(query=query, context=context, max_tokens=MAX_NEW_TOKENS)
@@ -457,16 +414,11 @@ async def generate_response(query: str, context: str = "") -> str:
         logger.error(f"Ошибка при генерации ответа: {e}")
         return "Извините, произошла ошибка при обработке вашего запроса."
 
-# Глобальные переменные для RAG
-document_embeddings = None
-document_chunks = []
-
 # Для хранения сессий Q&A и связывания с feedback
 QA_SESSIONS: Dict[int, int] = {}  # message_id -> qa_session_id
 
 # A/B тестирование и конфигурация
-USE_SEARCH_V2 = os.getenv('USE_SEARCH_V2', 'false').lower() == 'true'
-SEARCH_V2_PERCENTAGE = int(os.getenv('SEARCH_V2_PERCENTAGE', '30'))  # % пользователей на новой версии
+# USE_SEARCH_V2 и SEARCH_V2_PERCENTAGE берём из config.py
 
 # Дополнительные вспомогательные для индексации сервиса
 ALLOWED_EXTENSIONS = {'.docx'}
@@ -790,6 +742,14 @@ def setup_handlers(dp: Dispatcher):
                     'verified_at': datetime.now().strftime('%Y-%m-%d %H:%M')
                 }
                 await log_registration_attempt(user_id, name, employee_id, True)
+                # Уведомление админу о успешной регистрации
+                await send_admin_notification(
+                    f"✅ Новая регистрация!\n"
+                    f"👤 ФИО: {name}\n"
+                    f"🔢 Табельный: {employee_id}\n"
+                    f"📝 Должность: {verification_result.get('position', 'Не указана')}\n"
+                    f"🏢 Отдел: {verification_result.get('department', 'Не указан')}"
+                )
                 await message.answer(
                     f"✅ Регистрация подтверждена!\n\n"
                     f"📋 Ваши данные:\n"
@@ -804,6 +764,13 @@ def setup_handlers(dp: Dispatcher):
                 await inc_registration_attempt(user_id)
                 await log_registration_attempt(user_id, name or '', employee_id, False)
                 attempts = REGISTRATION_ATTEMPTS.get(user_id, {}).get('count', 0)
+                # Уведомление админу о неудачной попытке
+                await send_admin_notification(
+                    f"❌ Неудачная попытка регистрации\n"
+                    f"👤 ФИО: {name}\n"
+                    f"🔢 Табельный: {employee_id}\n"
+                    f" Попытка: {attempts + 1}/{MAX_ATTEMPTS}"
+                )
                 attempts_left = MAX_ATTEMPTS - attempts
                 error_msg = [
                     "❌ Ошибка проверки данных\n",
@@ -828,16 +795,17 @@ def setup_handlers(dp: Dispatcher):
         if user_id not in AUTHORIZED_USERS:
             await message.answer("❌ Вы не авторизованы! Используйте /start для регистрации.")
             return
-        awaiting = await get_user_state(user_id, 'awaiting_question')
-        if not awaiting:
-            await set_user_state(user_id, 'awaiting_question', '1')
+        # Запоминаем авторизованного пользователя и включаем режим ожидания вопроса
+        await set_user_state(user_id, 'awaiting_question', '1')
+        logger.info(f"Ask mode enabled for user {user_id}")
         await message.answer(
             "Задайте ваш вопрос. Я постараюсь ответить, используя доступную документацию.",
             reply_markup=ReplyKeyboardRemove()
         )
 
     # Кнопка «Спросить» (русская)
-    @dp.message(lambda m: m.text and m.text.strip().lower() == 'спросить')
+    # Обрабатываем разные варианты нажатия кнопки/ввода
+    @dp.message(Text(equals=["спросить", "вопрос", "задай вопрос"], ignore_case=True))
     async def ask_button(message: types.Message):
         await ask_handler(message)
 
@@ -848,6 +816,7 @@ def setup_handlers(dp: Dispatcher):
             return
         awaiting = await get_user_state(user_id, 'awaiting_question')
         if not awaiting:
+            # Игнорируем сервисные/кнопочные сообщения
             return
         await set_user_state(user_id, 'awaiting_question', '0')
         
@@ -860,7 +829,7 @@ def setup_handlers(dp: Dispatcher):
             import aiohttp
             top_context = ""
             sources_block = ""
-            conf_threshold = 0.12
+            # conf_threshold = 0.12  # заменено на использование CONFIDENCE_THRESHOLD из config.py
             confidence_score = 0.0
             context_found = False
             
@@ -885,7 +854,7 @@ def setup_handlers(dp: Dispatcher):
                     )
                     return
                 
-                if confidence_score < conf_threshold:
+                if confidence_score < CONFIDENCE_THRESHOLD:
                     # Логируем как неотвеченный вопрос
                     user_info = AUTHORIZED_INFO.get(user_id, {})
                     await log_unanswered_question(
@@ -1081,7 +1050,7 @@ def setup_handlers(dp: Dispatcher):
         try:
             # Анализируем логи за последние 7 дней
             import aiosqlite
-            async with aiosqlite.connect('employees.db') as db:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
                 # Статистика v1 (без префикса [v2])
                 async with db.execute(
                     """SELECT 
@@ -1166,48 +1135,7 @@ def setup_handlers(dp: Dispatcher):
             logger.error(f"Ошибка при сравнении версий поиска: {e}")
             await message.answer('❌ Ошибка при получении статистики сравнения.')
 
-        if message.from_user.id == ADMIN_CHAT_ID:
-            help_text += '\n\n<b>Админ-команды:</b>\n' \
-                        '/train - добавить документ (.docx) и обновить поиск\n' \
-                        '/analytics - подробная статистика использования\n' \
-                        '/stats - краткая статистика (алиас для analytics)\n' \
-                        '/compare_search - сравнение версий поиска (A/B тест)'
+# Перенесено: инициализация Dispatcher и точка входа находятся в main.py
 
-# Инициализация диспетчера
-dp = Dispatcher()
 
-async def main():
-    """Главная функция запуска бота"""
-    logger.info("🚀 Запуск корпоративного бота...")
     
-    try:
-        # Инициализация базы данных
-        from database import init_db, populate_test_data
-        await init_db()
-        await populate_test_data()
-        
-        # Загружаем сотрудников из 1C (если есть файл)
-        if ONEC_EXPORT_PATH and os.path.exists(ONEC_EXPORT_PATH):
-            logger.info(f"📋 Загружаем сотрудников из {ONEC_EXPORT_PATH}")
-            load_employees_from_file(ONEC_EXPORT_PATH)
-        
-        # Регистрируем все хендлеры
-        setup_handlers(dp)
-        
-        # Запуск периодической синхронизации
-        asyncio.create_task(periodic_sync())
-        
-        # Уведомляем администратора о запуске
-        await send_admin_notification("🤖 Корпоративный бот запущен и готов к работе!")
-        
-        # Запускаем бота
-        await dp.start_polling(bot)
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")
-        await send_admin_notification(f"❌ Ошибка запуска бота: {e}")
-    finally:
-        await bot.session.close()
-
-if __name__ == '__main__':
-    asyncio.run(main())

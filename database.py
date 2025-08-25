@@ -194,6 +194,7 @@ async def verify_employee(full_name: str, employee_id: str) -> dict:
                         (full_name, employee_id)
                     )
                     row = await cur.fetchone()
+            pool.close()
             await pool.wait_closed()
             if row:
                 department, position = row
@@ -262,6 +263,24 @@ async def get_registration_attempts(telegram_id: int) -> list:
         logger.error(f"Ошибка при получении истории попыток: {e}")
         return []
 
+async def get_last_successful_registration(telegram_id: int) -> dict:
+    """Возвращает последнюю успешную регистрацию пользователя (или пустой словарь)."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT full_name, employee_id FROM registration_attempts
+                WHERE telegram_id = ? AND success = 1
+                ORDER BY attempt_time DESC
+                LIMIT 1""",
+                (telegram_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.error(f"Ошибка при получении последней успешной регистрации: {e}")
+        return {}
+
 async def get_all_employees() -> list:
     """Список сотрудников: MSSQL -> MySQL -> SQLite."""
     # MSSQL
@@ -295,6 +314,7 @@ async def get_all_employees() -> list:
                 async with conn.cursor(aiomysql.DictCursor) as cur:  # type: ignore
                     await cur.execute("SELECT employee_id, full_name, department, position FROM employees")
                     rows = await cur.fetchall()
+            pool.close()
             await pool.wait_closed()
             return rows or []
         except Exception as e:

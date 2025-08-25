@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Telegram Bot
-API_TOKEN = os.getenv('API_TOKEN', '7987520742:AAHOXmsESsiP46HTQLPxu5PTzdDErj0XuwE')
-ADMIN_CHAT_ID = int((os.getenv('ADMIN_CHAT_ID') or '925237471'))
+API_TOKEN = os.getenv('API_TOKEN') or ''
+ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '0'))
 
 # Model Service
 MODEL_SERVICE_URL = os.getenv('MODEL_SERVICE_URL', 'http://localhost:8000')

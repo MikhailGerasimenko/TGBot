@@ -8,7 +8,6 @@ import time
 from typing import Optional, Callable
 from aiogram import Bot
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-import emoji
 
 class ProgressBar:
     """Класс для создания и обновления прогресс-баров"""
