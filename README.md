@@ -91,7 +91,7 @@ curl http://localhost:8000/health
 Пример путей для `.env` (локально):
 ```env
 MODEL_SERVICE_URL=http://localhost:8000
-GGUF_MODEL_PATH=models/model-q2_k.gguf
+GGUF_MODEL_PATH=models/model-gigachat_20b_q6_0.gguf
 ```
 
 ### Вариант B — Docker Compose
@@ -101,7 +101,7 @@ docker compose up -d
 # healthcheck
 curl http://localhost:8000/health
 ```
-В Compose сервис бота видит модель по `MODEL_SERVICE_URL=http://model_service:8000`. Путь к модели внутри контейнера: `/app/models/model-q2_k.gguf`.
+В Compose сервис бота видит модель по `MODEL_SERVICE_URL=http://model_service:8000`. Путь к модели внутри контейнера: `/app/models/model-gigachat_20b_q6_0.gguf`.
 
 ### Вариант C — systemd (бот)
 ```bash
@@ -127,10 +127,10 @@ ADMIN_CHAT_ID=your_admin_id
 # Model Service
 # Локально:
 MODEL_SERVICE_URL=http://localhost:8000
-GGUF_MODEL_PATH=models/model-q2_k.gguf
+GGUF_MODEL_PATH=models/model-gigachat_20b_q6_0.gguf
 # В Docker:
 # MODEL_SERVICE_URL=http://model_service:8000
-# GGUF_MODEL_PATH=/app/models/model-q2_k.gguf
+# GGUF_MODEL_PATH=/app/models/model-gigachat_20b_q6_0.gguf
 LLAMA_CTX=2048
 LLAMA_THREADS=4
 LLAMA_BATCH=256

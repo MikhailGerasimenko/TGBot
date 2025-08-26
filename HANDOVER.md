@@ -45,7 +45,7 @@
 - `ADMIN_CHAT_ID` — Telegram ID администратора
 Рекомендуемые:
 - `MODEL_SERVICE_URL` — URL сервиса модели (локально `http://localhost:8000`, в Docker — `http://model_service:8000`)
-- `GGUF_MODEL_PATH` — путь к GGUF‑модели для сервиса (`/app/models/model-q2_k.gguf` в контейнере)
+- `GGUF_MODEL_PATH` — путь к GGUF‑модели для сервиса (`/app/models/model-gigachat_20b_q6_0.gguf` в контейнере)
 - `CONFIDENCE_THRESHOLD` — порог уверенности ответов (например, `0.12`)
 - `DATABASE_PATH` — путь к SQLite файлу (по умолчанию `employees.db`)
 - `USE_SEARCH_V2`, `SEARCH_V2_PERCENTAGE` — A/B конфигурация поиска

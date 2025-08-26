@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      GGUF_MODEL_PATH: /app/models/model-q2_k.gguf
+      GGUF_MODEL_PATH: /app/models/model-gigachat_20b_q6_0.gguf
     volumes:
       - ./models:/app/models
       - ./logs:/app/logs

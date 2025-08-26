@@ -11,7 +11,7 @@ ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '0'))
 # Model Service
 MODEL_SERVICE_URL = os.getenv('MODEL_SERVICE_URL', 'http://localhost:8000')
 # Путь к GGUF модели для сервиса модели (используется model_service.py)
-GGUF_MODEL_PATH = os.getenv('GGUF_MODEL_PATH', 'model-q2_k.gguf')
+GGUF_MODEL_PATH = os.getenv('GGUF_MODEL_PATH', 'models/model-gigachat_20b_q6_0.gguf')
 
 # RAG Configuration
 EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'paraphrase-multilingual-MiniLM-L12-v2')
