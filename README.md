@@ -19,6 +19,25 @@ Telegram‑бот для корпоративной поддержки с исп
 - Telegram Bot (`bot.py` + `main.py`, aiogram v3): команды, UX, интеграции, аналитика
 - БД/данные: SQLite (по умолч.), MySQL/MSSQL (через aio*), выгрузки 1С (CSV/JSON/TXT)
 
+## Состав репозитория (основные файлы)
+
+- `bot.py`: логика бота, хендлеры, интеграция с сервисом модели
+- `main.py`: точка входа бота (инициализация БД, Dispatcher, запуск polling)
+- `model_service.py`: FastAPI‑сервис LLM/RAG (генерация, эмбеддинги, поиск, индексация)
+- `database.py`: доступ к MSSQL/MySQL/SQLite, логирование сессий, аналитика, фидбек
+- `onec_sync.py`: парсер выгрузок 1С (CSV/JSON/TXT), нормализация данных
+- `llm_client.py`: HTTP‑клиент к `model_service` (таймауты, JSON)
+- `progress_bars.py`: прогресс‑индикаторы в Telegram
+- `redis_client.py`: клиент Redis (при использовании состояний/кэша)
+- `config.py`: загрузка `.env`, директории, глобальные параметры
+- `requirements-bot.txt`, `requirements-service.txt`: разделённые зависимости
+- `Dockerfile.bot`, `Dockerfile.model`, `docker-compose.yml`, `.dockerignore`: контейнеризация и оркестрация
+- `telegram-bot.service`, `model-service.service`: примеры unit‑файлов systemd
+- `env.example`: образец `.env`
+- `dev.sh`, `setup.sh`: быстрый запуск и подготовка окружения
+- `docs/`: детальная документация (архитектура, установка, деплой, API, эксплуатация, безопасность, качество)
+- `models/`, `docs/`, `logs/`, `backups/`: модели/индексы, документы‑источники, логи, резервные копии
+
 ## Требования
 
 - Python 3.10+ (локальный запуск) или Docker (рекомендуется)
