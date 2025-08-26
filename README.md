@@ -1,6 +1,6 @@
 # Корпоративный Telegram Бот с LLM
 
-> Полное руководство по развёртыванию и сопровождению: см. файл HANDOVER.md
+> Полное руководство: HANDOVER.md. Подробная документация: docs/Architecture.md, docs/Setup.md, docs/Deploy.md, docs/API.md, docs/Operations.md, docs/Security.md, docs/Quality.md
 
 Telegram бот для корпоративной поддержки с использованием Language Model (LLM) для ответов на вопросы и обработки документации. Реализует современные методы RAG (Retrieval Augmented Generation)
 
